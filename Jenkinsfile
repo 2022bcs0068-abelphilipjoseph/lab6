@@ -1,6 +1,10 @@
 pipeline {
     agent any
 
+    tools {
+        dockerTool 'docker' 
+    }
+
     environment {
         // Fetch the baseline accuracy from Jenkins credentials
         BEST_ACCURACY_CRED = credentials('best-accuracy')
