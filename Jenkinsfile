@@ -5,7 +5,7 @@ pipeline {
         // Fetch the baseline accuracy from Jenkins credentials
         BEST_ACCURACY_CRED = credentials('best-accuracy')
         // UPDATE THIS to your actual Docker Hub username and repo name (e.g., 'iiitkabel/lab6-model')
-        DOCKER_HUB_REPO = "your-dockerhub-username/your-repo-name" 
+        DOCKER_HUB_REPO = "iiitkabel/jenkins_automation_wine_prediction" 
     }
 
     stages {
