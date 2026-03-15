@@ -73,8 +73,8 @@ pipeline {
             }
             steps {
                 script {
-                    // Builds the image tagged with the Jenkins build number
-                    dockerImage = docker.build("${DOCKER_HUB_REPO}:${env.BUILD_NUMBER}")
+                    docker.withTool('docker'){
+			sh 'docker build -t "$JD_IMAGE" . '
                 }
             }
         }
@@ -85,10 +85,10 @@ pipeline {
             }
             steps {
                 script {
-                    // Authenticates and pushes to Docker Hub
-                    docker.withRegistry('', 'dockerhub-creds') {
-                        dockerImage.push("${env.BUILD_NUMBER}")
-                        dockerImage.push("latest")
+                    
+                    docker.withTool('docker') {
+                        sh 'echo $DOCKERHUB_CREDENTIALS_PSW | docker login -u $DOCKERHUB_CREDENTIALS_USR --password-stdin'
+                        sh 'docker push "$JD_IMAGE" '
                     }
                 }
             }
