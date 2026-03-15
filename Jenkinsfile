@@ -1,105 +1,158 @@
 pipeline {
     agent any
-
+    
+    // We keep our Docker tool configuration to prevent the "docker: not found" error!
     tools {
-        dockerTool 'docker' 
+        dockerTool 'docker'
     }
 
     environment {
-        // Fetch the baseline accuracy from Jenkins credentials
-        BEST_ACCURACY_CRED = credentials('best-accuracy')
-        // UPDATE THIS to your actual Docker Hub username and repo name (e.g., 'iiitkabel/lab6-model')
-        DOCKER_HUB_REPO = "iiitkabel/jenkins_automation_wine_prediction" 
+        // Ultimate PATH fix to ensure the shell finds the Docker tool
+        PATH = "${tool 'docker'}/bin:${env.PATH}"
+        
+        VENV_DIR = "venv"
+        METRICS_FILE = "app/artifacts/metrics.json"
+        
+        // YOUR Docker Hub Repository
+        DOCKER_HUB_REPO = "iiitkabel/jenkins_automation_wine_prediction"
     }
 
     stages {
+        // =========================
+        // Stage 1: Checkout
+        // =========================
         stage('Checkout') {
             steps {
                 checkout scm
             }
         }
 
+        // =========================
+        // Stage 2: Setup Python Virtual Environment
+        // =========================
         stage('Setup Python Virtual Environment') {
             steps {
                 sh '''
-                    virtualenv venv
-                    . venv/bin/activate
-                    pip install -r requirements.txt
+                python3 -m venv $VENV_DIR
+                . $VENV_DIR/bin/activate
+                pip install --upgrade pip
+                pip install -r requirements.txt
                 '''
             }
         }
 
+        // =========================
+        // Stage 3: Train Model
+        // =========================
         stage('Train Model') {
             steps {
                 sh '''
-                    . venv/bin/activate
-                    # Adjust 'scripts/train.py' if your training script has a different name/path
-                    python scripts/train.py 
+                . $VENV_DIR/bin/activate
+                python scripts/train.py
                 '''
             }
         }
 
-        stage('Read Accuracy') {
+        // =========================
+        // Stage 4: Read R2 and MSE
+        // =========================
+        stage('Read R2 and MSE') {
             steps {
                 script {
-                    // Uses 'jq' to extract the accuracy from the JSON file
-                    // Ensure the key in metrics.json matches  '.r2_score' accordingly
-                    env.CURRENT_ACCURACY = sh(script: "jq -r '.r2_score' app/artifacts/metrics.json", returnStdout: true).trim()
-                    echo "Current Model Accuracy: ${env.CURRENT_ACCURACY}"
+                    // Requires the "Pipeline Utility Steps" plugin in Jenkins
+                    def metrics = readJSON file: "${METRICS_FILE}"
+                    env.CUR_R2 = metrics.r2_score.toString()
+                    env.CUR_MSE = metrics.mse.toString()
+                    echo "--------------------------------"
+                    echo "Model Evaluation Metrics"
+                    echo "R2 Score : ${env.CUR_R2}"
+                    echo "MSE : ${env.CUR_MSE}"
+                    echo "--------------------------------"
                 }
             }
         }
 
-        stage('Compare Accuracy') {
+        // =========================
+        // Stage 5: Compare R2 and MSE
+        // =========================
+        stage('Compare R2 and MSE') {
             steps {
                 script {
-                    echo "Baseline Best Accuracy: ${env.BEST_ACCURACY_CRED}"
-                    
-                    // Convert strings to floats for comparison
-                    if (env.CURRENT_ACCURACY.toFloat() > env.BEST_ACCURACY_CRED.toFloat()) {
-                        echo "New model is better! Proceeding to build and push."
-                        env.DEPLOY_MODEL = 'true'
-                    } else {
-                        echo "Model did not improve. Skipping deployment."
-                        env.DEPLOY_MODEL = 'false'
+                    withCredentials([
+                        string(credentialsId: 'BEST_R2', variable: 'BEST_R2_VAL'),
+                        string(credentialsId: 'BEST_MSE', variable: 'BEST_MSE_VAL')
+                    ]) {
+                        def curR2 = env.CUR_R2.toFloat()
+                        def curMSE = env.CUR_MSE.toFloat()
+                        def bestR2 = BEST_R2_VAL.toFloat()
+                        def bestMSE = BEST_MSE_VAL.toFloat()
+                        
+                        echo "Comparing model performance..."
+                        
+                        // Condition to deploy: Better R2 AND Better MSE
+                        if (curR2 > bestR2 && curMSE < bestMSE) {
+                            env.BUILD_DOCKER = "true"
+                            echo "Model improved (Higher R2 & Lower MSE). Docker build will proceed."
+                        } else {
+                            env.BUILD_DOCKER = "false"
+                            echo "Model NOT improved. Skipping Docker build."
+                        }
                     }
                 }
             }
         }
 
-        stage('Build Docker Image (Conditional)') {
+        // =========================
+        // Stage 6: Build Docker Image
+        // =========================
+        stage('Build Docker Image') {
             when {
-                environment name: 'DEPLOY_MODEL', value: 'true'
+                expression { env.BUILD_DOCKER == "true" }
             }
             steps {
-                script {
-                    docker.withTool('docker'){
-			sh 'docker build -t "$JD_IMAGE" . '
+                withCredentials([usernamePassword(
+                    credentialsId: 'dockerhub-creds',
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASS'
+                )]) {
+                    // Using double quotes """ allows us to safely inject variables
+                    sh """
+                    echo \$DOCKER_PASS | docker login -u \$DOCKER_USER --password-stdin
+                    docker build -t ${DOCKER_HUB_REPO}:${BUILD_NUMBER} .
+                    docker tag ${DOCKER_HUB_REPO}:${BUILD_NUMBER} ${DOCKER_HUB_REPO}:latest
+                    """
                 }
             }
         }
 
-        stage('Push Docker Image (Conditional)') {
+        // =========================
+        // Stage 7: Push Docker Image
+        // =========================
+        stage('Push Docker Image') {
             when {
-                environment name: 'DEPLOY_MODEL', value: 'true'
+                expression { env.BUILD_DOCKER == "true" }
             }
             steps {
-                script {
-                    
-                    docker.withTool('docker') {
-                        sh 'echo $DOCKERHUB_CREDENTIALS_PSW | docker login -u $DOCKERHUB_CREDENTIALS_USR --password-stdin'
-                        sh 'docker push "$JD_IMAGE" '
-                    }
+                withCredentials([usernamePassword(
+                    credentialsId: 'dockerhub-creds',
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASS'
+                )]) {
+                    sh """
+                    docker push ${DOCKER_HUB_REPO}:${BUILD_NUMBER}
+                    docker push ${DOCKER_HUB_REPO}:latest
+                    """
                 }
             }
         }
     }
 
-    // Task 5: Artifact Archiving
+    // =========================
+    // Artifact Archiving
+    // =========================
     post {
         always {
-            // Archives everything in app/artifacts/ regardless of pass/fail
-            archiveArtifacts artifacts: 'app/artifacts/**', allowEmptyArchive: true
+            archiveArtifacts artifacts: 'app/artifacts/**', fingerprint: true
         }
     }
 }
