@@ -1,0 +1,12 @@
+# Virtual environment
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Auto-generated model and metrics (GitHub Actions will handle these)
+model.pkl
+*.pkl
+results.json
+outputs/
